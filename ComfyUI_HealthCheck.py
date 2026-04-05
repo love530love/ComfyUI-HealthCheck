@@ -1,7 +1,7 @@
 # ComfyUI_HealthCheck.py
 # A lightweight health check plugin for ComfyUI
 # Author: love530love
-# Version: 1.0.0
+# Version: 1.0.2
 
 import os
 import sys
@@ -44,6 +44,7 @@ class LogCapture:
         self.captured = io.StringIO()
         self.import_failed_lines = []
         self.import_success_lines = []
+        self.import_times_complete = False  # 标记是否完成导入统计
 
     def start(self):
         capture = self
@@ -65,7 +66,7 @@ class LogCapture:
                 # Write to capture buffer
                 capture.captured.write(data)
 
-                # Real-time detection of IMPORT FAILED
+                # Real-time detection
                 self.buffer += data
                 if "\n" in self.buffer:
                     lines = self.buffer.split("\n")
@@ -75,6 +76,11 @@ class LogCapture:
                             capture.import_failed_lines.append(line)
                         elif "seconds" in line and "custom_nodes" in line and "IMPORT FAILED" not in line:
                             capture.import_success_lines.append(line)
+                        # 检测导入完成标记
+                        elif "Import times for custom nodes:" in line:
+                            capture.import_times_complete = True
+                            # 触发延迟报告（再等待几秒确保完全完成）
+                            trigger_delayed_report()
 
             def flush(self):
                 if self.stream_type == 'stdout':
@@ -100,7 +106,8 @@ log_capture = LogCapture()
 
 # ===== Statistics Functions =====
 def count_plugins():
-    base = Path(__file__).resolve().parent
+    """Count plugins in parent directory (custom_nodes), not current directory"""
+    base = Path(__file__).resolve().parent.parent
     total = 0
     folders = 0
     pyfiles = 0
@@ -151,14 +158,21 @@ BANNER = r"""
 ╚██████╗╚██████╔╝██║ ╚═╝ ██║██║     ╚██████╔╝██║
  ╚═════╝ ╚═════╝ ╚═╝     ╚═╝╚═╝      ╚═════╝ ╚═╝
 
-   🔍 ComfyUI HealthCheck v1.0.0
+   🔍 ComfyUI HealthCheck v1.0.2
 """
+
+_report_printed = False  # 防止重复输出
 
 
 def print_report():
     """Generate and print health report"""
+    global _report_printed
+    if _report_printed:
+        return
+    _report_printed = True
+
     try:
-        custom_nodes_dir = Path(__file__).resolve().parent
+        custom_nodes_dir = Path(__file__).resolve().parent.parent
         total, folders, pyfiles = count_plugins()
         node_count = get_node_count()
 
@@ -169,7 +183,7 @@ def print_report():
 
         health = (success_count / total * 100) if total else 0
 
-        # Color output using ANSI codes
+        # Color output
         CYAN = "\033[96m"
         GREEN = "\033[92m"
         RED = "\033[91m"
@@ -179,7 +193,8 @@ def print_report():
         BOLD = "\033[1m"
         RESET = "\033[0m"
 
-        print(f"\n{CYAN}{'=' * 60}{RESET}")
+        # 添加空行与其他输出分隔
+        print(f"\n\n{CYAN}{'=' * 60}{RESET}")
         print(f"{CYAN}{BANNER}{RESET}")
         print(f"{CYAN}{'=' * 60}{RESET}")
         print(f"{BOLD}{'🚀 ComfyUI Plugin Health Report':^56}{RESET}")
@@ -211,12 +226,21 @@ def print_report():
         traceback.print_exc()
 
 
+def trigger_delayed_report():
+    """在检测到导入完成后触发报告"""
+    # 再延迟 5 秒确保所有节点注册完成
+    threading.Timer(5.0, print_report).start()
+
+
 # ===== Initialization =====
 log_capture.start()
 
 
-def delayed_check():
-    threading.Timer(15.0, print_report).start()
+# 备用：如果 60 秒内没有检测到导入完成标记，强制输出
+def backup_timer():
+    if not _report_printed:
+        print("[HealthCheck] Backup timer triggered...")
+        print_report()
 
 
-delayed_check()
+threading.Timer(60.0, backup_timer).start()
