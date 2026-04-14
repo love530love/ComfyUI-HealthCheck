@@ -1,7 +1,7 @@
-﻿[project]
+[project]
 name = "comfyui-healthcheck"
-description = "A lightweight health check plugin for ComfyUI that monitors custom node import status and provides colorful summary reports"
-version = "1.0.0"
+description = "A lightweight health check plugin for ComfyUI"
+version = "1.0.2"
 license = {file = "LICENSE"}
 dependencies = []
 
@@ -10,6 +10,6 @@ Repository = "https://github.com/love530love/ComfyUI-HealthCheck"
 Issues = "https://github.com/love530love/ComfyUI-HealthCheck/issues"
 
 [tool.comfy]
-PublisherId = "love530love"
+PublisherId = "aitechlab"
 DisplayName = "ComfyUI HealthCheck"
-Icon = "🔍"
+Icon = ""
