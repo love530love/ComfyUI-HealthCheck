@@ -206,25 +206,25 @@ def print_report():
         print(f"{CYAN}{'=' * 60}{RESET}")
         print(f"{BOLD}{'🚀 ComfyUI Plugin Health Report':^56}{RESET}")
         print(f"{CYAN}{'=' * 60}{RESET}")
-        print(f"{WHITE}📦 Total Plugins: {BOLD}{total}{RESET} {GRAY}(folders: {folders}, .py: {pyfiles}){RESET}")
-        print(f"{GREEN}✅ Successful: {BOLD}{success_count}{RESET}")
-        print(f"{RED}❌ Failed: {BOLD}{failed_count}{RESET}")
-        print(f"{YELLOW}📊 Health: {BOLD}{health:.1f}%{RESET}")
-        print(f"{WHITE}🧠 Node Classes: {BOLD}{node_count}{RESET}")
+        print(f"{WHITE}📦 扫描到总共安装了的插件数/Total Plugins: {BOLD}{total}{RESET} {GRAY}(其中 插件文件夹数/folders: {folders}, 单独以 .py 形式存在的插件数/.py: {pyfiles}){RESET}")
+        print(f"{GREEN}✅ 已成功加载的插件数/Successful: {BOLD}{success_count}{RESET}")
+        print(f"{RED}❌ 加载失败需要排查原因的插件数/Failed: {BOLD}{failed_count}{RESET}")
+        print(f"{YELLOW}📊 健康度/Health: {BOLD}{health:.1f}%{RESET}")
+        print(f"{WHITE}🧠 已成功扫描到的节点数/Node Classes: {BOLD}{node_count}{RESET}")
 
         if failed_plugins:
-            print(f"\n{RED}🚨 Failed Plugins:{RESET}")
+            print(f"\n{RED}🚨 加载失败的插件/Failed Plugins:{RESET}")
             for plugin in failed_plugins[:20]:
                 full_path = custom_nodes_dir / plugin
                 print(f"{RED}   ✗ {plugin}{RESET}")
                 print(f"{GRAY}     └─ {full_path}{RESET}")
             if len(failed_plugins) > 20:
-                print(f"{RED}   ... and {len(failed_plugins) - 20} more{RESET}")
+                print(f"{RED}   ... 还有/and {len(failed_plugins) - 20} more{RESET}")
         else:
-            print(f"\n{GREEN}🎉 All plugins loaded successfully!{RESET}")
+            print(f"\n{GREEN}🎉 所有插件加载成功！/All plugins loaded successfully!{RESET}")
 
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        print(f"\n{GRAY}Checked at: {timestamp}{RESET}")
+        print(f"\n{GRAY}检测时间戳/Checked at: {timestamp}{RESET}")
         print(f"{CYAN}{'=' * 60}{RESET}\n")
 
     except Exception as e:
