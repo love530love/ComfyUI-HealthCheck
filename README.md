@@ -6,7 +6,7 @@ A lightweight health check plugin for ComfyUI that monitors custom node import s
 
 - 📦 **Auto-count** total installed plugins (folders + .py files)
 - ✅ **Detect successful imports** via real-time log capture
-- ❌ **List failed plugins** with full paths for easy debugging
+- ❌ **List failed plugins** with full paths for easy troubleshooting
 - 📊 **Health percentage** calculation (success rate)
 - 🧠 **Total node classes** count
 - 🎨 **Colorful console output** (ANSI colors)
@@ -40,12 +40,17 @@ No configuration needed. After ComfyUI starts, check the console output:
                     🚀 ComfyUI Plugin Health Report
 ============================================================
 📦 Total Plugins: 306 (folders: 289, .py: 17)
-✅ Successful: 306
-❌ Failed: 0
-📊 Health: 100.0%
+✅ Successful: 305
+❌ Failed: 1
+📊 Health: 99.7%
 🧠 Node Classes: 6890
 
-🎉 All plugins loaded successfully!
+🚨 Failed Plugins:
+✗ Example-Plugin
+  └─ H:\ComfyUI\custom_nodes\Example-Plugin
+
+💡 Troubleshooting Hint:
+Search the startup log above for Traceback, Cannot import, ModuleNotFoundError, or ImportError.
 ============================================================
 ```
 
@@ -54,7 +59,8 @@ No configuration needed. After ComfyUI starts, check the console output:
 1. **Disguised as Node**: Registers a dummy node to avoid "IMPORT FAILED"
 2. **Log Capture**: Hijacks stdout/stderr to detect "(IMPORT FAILED)" markers
 3. **Delayed Output**: Waits 15s for all plugins to finish loading
-4. **Color Report**: ANSI-colored summary in console
+4. **Troubleshooting Hint**: Reminds you which log keywords to search when a plugin import fails
+5. **Color Report**: ANSI-colored summary in console
 
 ## Compatibility
 

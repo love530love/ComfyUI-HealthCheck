@@ -1,7 +1,7 @@
 [project]
 name = "comfyui-healthcheck"
 description = "A lightweight health check plugin for ComfyUI"
-version = "1.0.4"
+version = "1.0.5"
 license = {file = "LICENSE"}
 dependencies = []
 

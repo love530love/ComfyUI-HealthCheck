@@ -1,7 +1,7 @@
 # ComfyUI_HealthCheck.py
 # A lightweight health check plugin for ComfyUI
 # Author: love530love
-# Version: 1.0.4
+# Version: 1.0.5
 
 import os
 import sys
@@ -181,6 +181,16 @@ def extract_failed_plugins(log_lines):
     return failed
 
 
+def extract_plugin_name_from_path(path_text):
+    """Extract the plugin folder/file name after custom_nodes from a path."""
+    cleaned = path_text.strip().strip("'\"")
+    parts = cleaned.replace("\\", "/").split("/")
+    for index, part in enumerate(parts):
+        if part == "custom_nodes" and index + 1 < len(parts):
+            return parts[index + 1].strip()
+    return None
+
+
 # ===== Report Output =====
 BANNER = r"""
  ██████╗   ██████╗   ███╗   ███╗  ███████╗  ██╗   ██╗  ██╗  ██╗  ██╗
@@ -197,7 +207,7 @@ BANNER = r"""
 ██║  ██║  ███████╗  ██║  ██║  ███████╗  ██║     ██║  ██║  ╚██████╗  ██║  ██║  ███████╗  ╚██████╗  ██║  ██╗
 ╚═╝  ╚═╝  ╚══════╝  ╚═╝  ╚═╝  ╚══════╝  ╚═╝     ╚═╝  ╚═╝   ╚═════╝  ╚═╝  ╚═╝  ╚══════╝   ╚═════╝  ╚═╝  ╚═╝
 
-   🔍 ComfyUI HealthCheck v1.0.4
+   🔍 ComfyUI HealthCheck v1.0.5
 """
 
 _report_printed = False  # 防止重复输出
@@ -238,7 +248,7 @@ def print_report():
         print(f"{CYAN}{'=' * 60}{RESET}")
         print(f"{BOLD}{'🚀 ComfyUI Plugin Health Report':^56}{RESET}")
         print(f"{CYAN}{'=' * 60}{RESET}")
-        print(f"{WHITE}📦 扫描到总共安装了的插件数/Total Plugins: {BOLD}{total}{RESET} {GRAY}(其中 插件文件夹数/folders: {folders}, 单独以 .py 形式存在的插件数/.py: {pyfiles}){RESET}")
+        print(f"{WHITE}📦 扫描到已有的插件数/Total Plugins: {BOLD}{total}{RESET} {GRAY}(其中 插件文件夹数/folders: {folders}, 单独以 .py 形式存在的插件数/.py: {pyfiles}){RESET}")
         print(f"{GREEN}✅ 已成功加载的插件数/Successful: {BOLD}{success_count}{RESET}")
         print(f"{RED}❌ 加载失败需要排查原因的插件数/Failed: {BOLD}{failed_count}{RESET}")
         print(f"{YELLOW}📊 健康度/Health: {BOLD}{health:.1f}%{RESET}")
@@ -252,6 +262,9 @@ def print_report():
                 print(f"{GRAY}     └─ {full_path}{RESET}")
             if len(failed_plugins) > 20:
                 print(f"{RED}   ... 还有/and {len(failed_plugins) - 20} more{RESET}")
+            print(f"\n{YELLOW}💡 排查提示/Troubleshooting Hint:{RESET}")
+            print(f"{YELLOW}   请查看上方启动日志中的 Traceback、Cannot import、ModuleNotFoundError、ImportError 等关键词。{RESET}")
+            print(f"{YELLOW}   Search the startup log above for Traceback, Cannot import, ModuleNotFoundError, or ImportError.{RESET}")
         else:
             print(f"\n{GREEN}🎉 所有插件加载成功！/All plugins loaded successfully!{RESET}")
 
