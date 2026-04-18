@@ -1,12 +1,14 @@
 # ComfyUI_HealthCheck.py
 # A lightweight health check plugin for ComfyUI
 # Author: love530love
-# Version: 1.0.2
+# Version: 1.0.4
 
 import os
 import sys
 import threading
 import io
+import logging
+import re
 from pathlib import Path
 from datetime import datetime
 
@@ -41,10 +43,22 @@ class LogCapture:
     def __init__(self):
         self.original_stdout = sys.stdout
         self.original_stderr = sys.stderr
+        self.original_handler_streams = {}
         self.captured = io.StringIO()
         self.import_failed_lines = []
         self.import_success_lines = []
         self.import_times_complete = False  # 标记是否完成导入统计
+        self._lock = threading.Lock()
+
+    def _process_line(self, line):
+        if "(IMPORT FAILED)" in line or "IMPORT FAILED:" in line:
+            self.import_failed_lines.append(line)
+        elif "seconds" in line and "custom_nodes" in line and "IMPORT FAILED" not in line:
+            self.import_success_lines.append(line)
+        elif "Import times for custom nodes:" in line:
+            self.import_times_complete = True
+            # 触发延迟报告（再等待几秒确保完全完成）
+            trigger_delayed_report()
 
     def start(self):
         capture = self
@@ -67,20 +81,13 @@ class LogCapture:
                 capture.captured.write(data)
 
                 # Real-time detection
-                self.buffer += data
-                if "\n" in self.buffer:
-                    lines = self.buffer.split("\n")
-                    self.buffer = lines[-1]
-                    for line in lines[:-1]:
-                        if "(IMPORT FAILED)" in line:
-                            capture.import_failed_lines.append(line)
-                        elif "seconds" in line and "custom_nodes" in line and "IMPORT FAILED" not in line:
-                            capture.import_success_lines.append(line)
-                        # 检测导入完成标记
-                        elif "Import times for custom nodes:" in line:
-                            capture.import_times_complete = True
-                            # 触发延迟报告（再等待几秒确保完全完成）
-                            trigger_delayed_report()
+                with capture._lock:
+                    self.buffer += data
+                    if "\n" in self.buffer:
+                        lines = self.buffer.split("\n")
+                        self.buffer = lines[-1]
+                        for line in lines[:-1]:
+                            capture._process_line(line)
 
             def flush(self):
                 if self.stream_type == 'stdout':
@@ -94,7 +101,21 @@ class LogCapture:
         sys.stdout = TeeIO('stdout')
         sys.stderr = TeeIO('stderr')
 
+        # ComfyUI configures logging before custom nodes are imported, so
+        # existing handlers keep pointing at the old streams unless updated.
+        for handler in logging.getLogger().handlers:
+            stream = getattr(handler, "stream", None)
+            if stream is capture.original_stdout:
+                capture.original_handler_streams[handler] = stream
+                handler.stream = sys.stdout
+            elif stream is capture.original_stderr:
+                capture.original_handler_streams[handler] = stream
+                handler.stream = sys.stderr
+
     def stop(self):
+        for handler, stream in self.original_handler_streams.items():
+            handler.stream = stream
+        self.original_handler_streams.clear()
         sys.stdout = self.original_stdout
         sys.stderr = self.original_stderr
         return self.captured.getvalue()
@@ -136,16 +157,27 @@ def get_node_count():
 def extract_failed_plugins(log_lines):
     """Extract failed plugin names from captured log lines"""
     failed = []
+    path_pattern = re.compile(
+        r"(?:(?:\(\s*IMPORT FAILED\s*\))|(?:IMPORT FAILED:))\s*:?\s*(.+custom_nodes[\\/][^\\/\s:]+)",
+        re.IGNORECASE,
+    )
+
     for line in log_lines:
-        if "(IMPORT FAILED)" in line:
-            parts = line.replace("\\", "/").split("/")
-            for i, part in enumerate(parts):
-                if part == "custom_nodes" and i + 1 < len(parts):
-                    plugin_name = parts[i + 1].strip()
-                    plugin_name = plugin_name.split()[0] if ' ' in plugin_name else plugin_name
-                    if plugin_name and plugin_name not in failed:
-                        failed.append(plugin_name)
-                    break
+        normalized = line.strip()
+        if "IMPORT FAILED" not in normalized:
+            continue
+
+        match = path_pattern.search(normalized)
+        path_text = match.group(1) if match else normalized
+        path_text = path_text.strip().strip("'\"")
+        parts = path_text.replace("\\", "/").split("/")
+
+        for i, part in enumerate(parts):
+            if part == "custom_nodes" and i + 1 < len(parts):
+                plugin_name = parts[i + 1].strip()
+                if plugin_name and plugin_name not in failed:
+                    failed.append(plugin_name)
+                break
     return failed
 
 
@@ -165,7 +197,7 @@ BANNER = r"""
 ██║  ██║  ███████╗  ██║  ██║  ███████╗  ██║     ██║  ██║  ╚██████╗  ██║  ██║  ███████╗  ╚██████╗  ██║  ██╗
 ╚═╝  ╚═╝  ╚══════╝  ╚═╝  ╚═╝  ╚══════╝  ╚═╝     ╚═╝  ╚═╝   ╚═════╝  ╚═╝  ╚═╝  ╚══════╝   ╚═════╝  ╚═╝  ╚═╝
 
-   🔍 ComfyUI HealthCheck v1.0.3
+   🔍 ComfyUI HealthCheck v1.0.4
 """
 
 _report_printed = False  # 防止重复输出
