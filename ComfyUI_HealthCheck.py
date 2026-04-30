@@ -1,7 +1,7 @@
 # ComfyUI_HealthCheck.py
 # A lightweight health check plugin for ComfyUI
 # Author: love530love
-# Version: 1.0.5
+# Version: 1.0.7
 
 import os
 import sys
@@ -11,6 +11,8 @@ import logging
 import re
 from pathlib import Path
 from datetime import datetime
+
+MAX_CAPTURE_CHARS = 200_000
 
 
 # ===== Dummy Node Definition (Avoid IMPORT FAILED) =====
@@ -49,6 +51,16 @@ class LogCapture:
         self.import_success_lines = []
         self.import_times_complete = False  # 标记是否完成导入统计
         self._lock = threading.Lock()
+        self.stdout_proxy = None
+        self.stderr_proxy = None
+
+    def _append_capture(self, data):
+        self.captured.write(data)
+        if self.captured.tell() > MAX_CAPTURE_CHARS:
+            value = self.captured.getvalue()[-MAX_CAPTURE_CHARS:]
+            self.captured.seek(0)
+            self.captured.truncate(0)
+            self.captured.write(value)
 
     def _process_line(self, line):
         if "(IMPORT FAILED)" in line or "IMPORT FAILED:" in line:
@@ -57,8 +69,27 @@ class LogCapture:
             self.import_success_lines.append(line)
         elif "Import times for custom nodes:" in line:
             self.import_times_complete = True
-            # 触发延迟报告（再等待几秒确保完全完成）
-            trigger_delayed_report()
+            # 旧版兼容：触发延迟报告（延迟更长以覆盖新版额外输出）
+            trigger_delayed_report(10.0)
+        elif "To see the GUI go to:" in line:
+            # 新版 ComfyUI：服务器启动完成，触发延迟报告
+            # 延迟 15 秒确保覆盖后续异步插件初始化（DEPRECATION WARNING、
+            # web 资源加载、ComfyUI-Manager 缓存更新等）
+            # trigger_delayed_report 会自动取消之前的 timer，
+            # 所以即使 Import times 先触发，最终也会以这个更晚的触发为准
+            trigger_delayed_report(15.0)
+        elif "[ComfyUI-Manager] All startup tasks have been completed." in line:
+            # ComfyUI-Manager 启动完成，几乎立即输出
+            trigger_delayed_report(0.5)
+
+    @staticmethod
+    def _write_original(stream, data):
+        try:
+            stream.write(data)
+        except UnicodeEncodeError:
+            encoding = getattr(stream, "encoding", None) or "utf-8"
+            safe_data = data.encode(encoding, errors="replace").decode(encoding)
+            stream.write(safe_data)
 
     def start(self):
         capture = self
@@ -71,17 +102,14 @@ class LogCapture:
             def write(self, data):
                 # Write to original stream
                 if self.stream_type == 'stdout':
-                    capture.original_stdout.write(data)
-                    capture.original_stdout.flush()
+                    capture._write_original(capture.original_stdout, data)
                 else:
-                    capture.original_stderr.write(data)
-                    capture.original_stderr.flush()
-
-                # Write to capture buffer
-                capture.captured.write(data)
+                    capture._write_original(capture.original_stderr, data)
 
                 # Real-time detection
                 with capture._lock:
+                    # Write to capture buffer
+                    capture._append_capture(data)
                     self.buffer += data
                     if "\n" in self.buffer:
                         lines = self.buffer.split("\n")
@@ -98,8 +126,10 @@ class LogCapture:
             def isatty(self):
                 return False
 
-        sys.stdout = TeeIO('stdout')
-        sys.stderr = TeeIO('stderr')
+        self.stdout_proxy = TeeIO('stdout')
+        self.stderr_proxy = TeeIO('stderr')
+        sys.stdout = self.stdout_proxy
+        sys.stderr = self.stderr_proxy
 
         # ComfyUI configures logging before custom nodes are imported, so
         # existing handlers keep pointing at the old streams unless updated.
@@ -116,8 +146,12 @@ class LogCapture:
         for handler, stream in self.original_handler_streams.items():
             handler.stream = stream
         self.original_handler_streams.clear()
-        sys.stdout = self.original_stdout
-        sys.stderr = self.original_stderr
+        if sys.stdout is self.stdout_proxy:
+            sys.stdout = self.original_stdout
+        if sys.stderr is self.stderr_proxy:
+            sys.stderr = self.original_stderr
+        self.stdout_proxy = None
+        self.stderr_proxy = None
         return self.captured.getvalue()
 
 
@@ -207,10 +241,11 @@ BANNER = r"""
 ██║  ██║  ███████╗  ██║  ██║  ███████╗  ██║     ██║  ██║  ╚██████╗  ██║  ██║  ███████╗  ╚██████╗  ██║  ██╗
 ╚═╝  ╚═╝  ╚══════╝  ╚═╝  ╚═╝  ╚══════╝  ╚═╝     ╚═╝  ╚═╝   ╚═════╝  ╚═╝  ╚═╝  ╚══════╝   ╚═════╝  ╚═╝  ╚═╝
 
-   🔍 ComfyUI HealthCheck v1.0.5
+   🔍 ComfyUI HealthCheck v1.0.7
 """
 
 _report_printed = False  # 防止重复输出
+_report_timer = None     # 当前待执行的报告 timer
 
 
 def print_report():
@@ -276,12 +311,27 @@ def print_report():
         print(f"\n[HealthCheck] Report generation failed: {e}")
         import traceback
         traceback.print_exc()
+    finally:
+        log_capture.stop()
 
 
-def trigger_delayed_report():
-    """在检测到导入完成后触发报告"""
-    # 再延迟 5 秒确保所有节点注册完成
-    threading.Timer(5.0, print_report).start()
+def start_daemon_timer(delay, callback):
+    timer = threading.Timer(delay, callback)
+    timer.daemon = True
+    timer.start()
+    return timer
+
+
+def trigger_delayed_report(delay=5.0):
+    """在检测到导入完成后触发报告，支持自定义延迟
+    
+    每次调用会取消之前的 timer，确保只有最后一个触发点生效。
+    例如：Import times (10s) → To see the GUI (15s)，最终只会执行 15s 的那个。
+    """
+    global _report_timer
+    if _report_timer is not None:
+        _report_timer.cancel()
+    _report_timer = start_daemon_timer(delay, print_report)
 
 
 # ===== Initialization =====
@@ -295,4 +345,4 @@ def backup_timer():
         print_report()
 
 
-threading.Timer(60.0, backup_timer).start()
+start_daemon_timer(60.0, backup_timer)

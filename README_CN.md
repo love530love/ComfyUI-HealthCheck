@@ -38,8 +38,8 @@ git clone https://github.com/love530love/ComfyUI-HealthCheck.git
 ## 工作原理
 
 1. **伪装成节点**：注册虚拟节点避免自身被标记为 IMPORT FAILED
-2. **日志捕获**：重定向 stdout/stderr 检测 "(IMPORT FAILED)" 标记
-3. **延迟输出**：等待 15 秒确保所有插件加载完成
+2. **日志捕获**：临时重定向 stdout/stderr 检测 "(IMPORT FAILED)" 标记
+3. **延迟输出**：检测到插件导入统计后短暂等待，确保所有插件加载完成
 4. **排查提示**：当插件导入失败时，提示你回看启动日志中的关键异常关键词
 5. **彩色报告**：ANSI 颜色编码的控制台摘要
 
