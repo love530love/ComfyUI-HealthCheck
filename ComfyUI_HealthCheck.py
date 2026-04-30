@@ -1,7 +1,7 @@
 # ComfyUI_HealthCheck.py
 # A lightweight health check plugin for ComfyUI
 # Author: love530love
-# Version: 1.0.5
+# Version: 1.0.6
 
 import os
 import sys
@@ -11,6 +11,8 @@ import logging
 import re
 from pathlib import Path
 from datetime import datetime
+
+MAX_CAPTURE_CHARS = 200_000
 
 
 # ===== Dummy Node Definition (Avoid IMPORT FAILED) =====
@@ -49,6 +51,16 @@ class LogCapture:
         self.import_success_lines = []
         self.import_times_complete = False  # 标记是否完成导入统计
         self._lock = threading.Lock()
+        self.stdout_proxy = None
+        self.stderr_proxy = None
+
+    def _append_capture(self, data):
+        self.captured.write(data)
+        if self.captured.tell() > MAX_CAPTURE_CHARS:
+            value = self.captured.getvalue()[-MAX_CAPTURE_CHARS:]
+            self.captured.seek(0)
+            self.captured.truncate(0)
+            self.captured.write(value)
 
     def _process_line(self, line):
         if "(IMPORT FAILED)" in line or "IMPORT FAILED:" in line:
@@ -59,6 +71,15 @@ class LogCapture:
             self.import_times_complete = True
             # 触发延迟报告（再等待几秒确保完全完成）
             trigger_delayed_report()
+
+    @staticmethod
+    def _write_original(stream, data):
+        try:
+            stream.write(data)
+        except UnicodeEncodeError:
+            encoding = getattr(stream, "encoding", None) or "utf-8"
+            safe_data = data.encode(encoding, errors="replace").decode(encoding)
+            stream.write(safe_data)
 
     def start(self):
         capture = self
@@ -71,17 +92,14 @@ class LogCapture:
             def write(self, data):
                 # Write to original stream
                 if self.stream_type == 'stdout':
-                    capture.original_stdout.write(data)
-                    capture.original_stdout.flush()
+                    capture._write_original(capture.original_stdout, data)
                 else:
-                    capture.original_stderr.write(data)
-                    capture.original_stderr.flush()
-
-                # Write to capture buffer
-                capture.captured.write(data)
+                    capture._write_original(capture.original_stderr, data)
 
                 # Real-time detection
                 with capture._lock:
+                    # Write to capture buffer
+                    capture._append_capture(data)
                     self.buffer += data
                     if "\n" in self.buffer:
                         lines = self.buffer.split("\n")
@@ -98,8 +116,10 @@ class LogCapture:
             def isatty(self):
                 return False
 
-        sys.stdout = TeeIO('stdout')
-        sys.stderr = TeeIO('stderr')
+        self.stdout_proxy = TeeIO('stdout')
+        self.stderr_proxy = TeeIO('stderr')
+        sys.stdout = self.stdout_proxy
+        sys.stderr = self.stderr_proxy
 
         # ComfyUI configures logging before custom nodes are imported, so
         # existing handlers keep pointing at the old streams unless updated.
@@ -116,8 +136,12 @@ class LogCapture:
         for handler, stream in self.original_handler_streams.items():
             handler.stream = stream
         self.original_handler_streams.clear()
-        sys.stdout = self.original_stdout
-        sys.stderr = self.original_stderr
+        if sys.stdout is self.stdout_proxy:
+            sys.stdout = self.original_stdout
+        if sys.stderr is self.stderr_proxy:
+            sys.stderr = self.original_stderr
+        self.stdout_proxy = None
+        self.stderr_proxy = None
         return self.captured.getvalue()
 
 
@@ -207,7 +231,7 @@ BANNER = r"""
 ██║  ██║  ███████╗  ██║  ██║  ███████╗  ██║     ██║  ██║  ╚██████╗  ██║  ██║  ███████╗  ╚██████╗  ██║  ██╗
 ╚═╝  ╚═╝  ╚══════╝  ╚═╝  ╚═╝  ╚══════╝  ╚═╝     ╚═╝  ╚═╝   ╚═════╝  ╚═╝  ╚═╝  ╚══════╝   ╚═════╝  ╚═╝  ╚═╝
 
-   🔍 ComfyUI HealthCheck v1.0.5
+   🔍 ComfyUI HealthCheck v1.0.6
 """
 
 _report_printed = False  # 防止重复输出
@@ -276,12 +300,21 @@ def print_report():
         print(f"\n[HealthCheck] Report generation failed: {e}")
         import traceback
         traceback.print_exc()
+    finally:
+        log_capture.stop()
+
+
+def start_daemon_timer(delay, callback):
+    timer = threading.Timer(delay, callback)
+    timer.daemon = True
+    timer.start()
+    return timer
 
 
 def trigger_delayed_report():
     """在检测到导入完成后触发报告"""
     # 再延迟 5 秒确保所有节点注册完成
-    threading.Timer(5.0, print_report).start()
+    start_daemon_timer(5.0, print_report)
 
 
 # ===== Initialization =====
@@ -295,4 +328,4 @@ def backup_timer():
         print_report()
 
 
-threading.Timer(60.0, backup_timer).start()
+start_daemon_timer(60.0, backup_timer)

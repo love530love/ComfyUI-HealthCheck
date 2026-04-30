@@ -57,8 +57,8 @@ Search the startup log above for Traceback, Cannot import, ModuleNotFoundError, 
 ## How It Works
 
 1. **Disguised as Node**: Registers a dummy node to avoid "IMPORT FAILED"
-2. **Log Capture**: Hijacks stdout/stderr to detect "(IMPORT FAILED)" markers
-3. **Delayed Output**: Waits 15s for all plugins to finish loading
+2. **Log Capture**: Temporarily redirects stdout/stderr to detect "(IMPORT FAILED)" markers
+3. **Delayed Output**: Waits briefly after import timing output so plugins can finish loading
 4. **Troubleshooting Hint**: Reminds you which log keywords to search when a plugin import fails
 5. **Color Report**: ANSI-colored summary in console
 
