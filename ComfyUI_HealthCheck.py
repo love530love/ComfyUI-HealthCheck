@@ -191,27 +191,28 @@ def get_node_count():
 def extract_failed_plugins(log_lines):
     """Extract failed plugin names from captured log lines"""
     failed = []
-    path_pattern = re.compile(
-        r"(?:(?:\(\s*IMPORT FAILED\s*\))|(?:IMPORT FAILED:))\s*:?\s*(.+custom_nodes[\\/][^\\/\s:]+)",
-        re.IGNORECASE,
-    )
 
     for line in log_lines:
         normalized = line.strip()
-        if "IMPORT FAILED" not in normalized:
+        if "IMPORT FAILED" not in normalized.upper():
             continue
 
-        match = path_pattern.search(normalized)
-        path_text = match.group(1) if match else normalized
-        path_text = path_text.strip().strip("'\"")
-        parts = path_text.replace("\\", "/").split("/")
+        # 格式：IMPORT FAILED: <full_path_to_plugin>
+        # 找到 "IMPORT FAILED" 之后的内容
+        idx = normalized.upper().find("IMPORT FAILED")
+        if idx == -1:
+            continue
+        rest = normalized[idx + len("IMPORT FAILED"):].strip().lstrip(":)")
 
-        for i, part in enumerate(parts):
-            if part == "custom_nodes" and i + 1 < len(parts):
-                plugin_name = parts[i + 1].strip()
-                if plugin_name and plugin_name not in failed:
-                    failed.append(plugin_name)
-                break
+        # 在路径中找 custom_nodes/ 或 custom_nodes\
+        path_part = rest.replace("\\", "/").lower()
+        marker = "custom_nodes/"
+        if marker in path_part:
+            after = rest.replace("\\", "/")[path_part.find(marker) + len(marker):]
+            plugin_name = after.split("/")[0].strip().rstrip(")")
+            if plugin_name and plugin_name not in failed:
+                failed.append(plugin_name)
+
     return failed
 
 
@@ -241,7 +242,7 @@ BANNER = r"""
 ██║  ██║  ███████╗  ██║  ██║  ███████╗  ██║     ██║  ██║  ╚██████╗  ██║  ██║  ███████╗  ╚██████╗  ██║  ██╗
 ╚═╝  ╚═╝  ╚══════╝  ╚═╝  ╚═╝  ╚══════╝  ╚═╝     ╚═╝  ╚═╝   ╚═════╝  ╚═╝  ╚═╝  ╚══════╝   ╚═════╝  ╚═╝  ╚═╝
 
-   🔍 ComfyUI HealthCheck v1.0.7
+   🔍 ComfyUI HealthCheck v1.0.8
 """
 
 _report_printed = False  # 防止重复输出
