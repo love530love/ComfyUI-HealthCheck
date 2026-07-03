@@ -37,7 +37,45 @@ No configuration needed. After ComfyUI starts, check the console output:
 
 ```
 ============================================================
-                    🚀 ComfyUI Plugin Health Report
+
+ ██████╗   ██████╗   ███╗   ███╗  ███████╗  ██╗   ██╗  ██╗  ██╗  ██╗
+██╔════╝  ██╔═══██╗  ████╗ ████║  ██╔════╝  ╚██╗ ██╔╝  ██║  ██║  ██║
+██║       ██║   ██║  ██╔████╔██║  █████╗     ╚████╔╝   ██║  ██║  ██║
+██║       ██║   ██║  ██║╚██╔╝██║  ██╔══╝      ╚██╔╝    ██║  ██║  ██║
+╚██████╗  ╚██████╔╝  ██║ ╚═╝ ██║  ██║          ██║     ╚████╔╝   ██║
+ ╚═════╝   ╚═════╝   ╚═╝     ╚═╝  ╚═╝          ╚═╝      ╚═══╝    ╚═╝
+
+██╗  ██╗  ███████╗   █████╗   ██╗    ████████╗  ██╗  ██╗   ██████╗  ██╗  ██╗  ███████╗   ██████╗  ██╗  ██╗
+██║  ██║  ██╔════╝  ██╔══██╗  ██║    ╚══██╔══╝  ██║  ██║  ██╔════╝  ██║  ██║  ██╔════╝  ██╔════╝  ██║ ██╔╝
+███████║  █████╗    ███████║  ██║       ██║     ███████║  ██║       ███████║  █████╗    ██║       █████╔╝
+██╔══██║  ██╔══╝    ██╔══██║  ██║       ██║     ██╔══██║  ██║       ██╔══██║  ██╔══╝    ██║       ██╔═██╗
+██║  ██║  ███████╗  ██║  ██║  ███████╗  ██║     ██║  ██║  ╚██████╗  ██║  ██║  ███████╗  ╚██████╗  ██║  ██╗
+╚═╝  ╚═╝  ╚══════╝  ╚═╝  ╚═╝  ╚══════╝  ╚═╝     ╚═╝  ╚═╝   ╚═════╝  ╚═╝  ╚═╝  ╚══════╝   ╚═════╝  ╚═╝  ╚═╝
+
+   🔍 ComfyUI HealthCheck v1.0.9
+
+============================================================
+             🚀 ComfyUI Plugin Health Report
+============================================================
+📦 扫描到已有的插件数/Total Plugins: 320 (其中 插件文件夹数/folders: 304, 单独以 .py 形式存在的插件数/.py: 16)
+✅ 已成功加载的插件数/Successful: 320
+❌ 加载失败需要排查原因的插件数/Failed: 0
+📊 健康度/Health: 100.0%
+🧠 已成功扫描到的节点数/Node Classes: 7083
+
+🎉 所有插件加载成功！/All plugins loaded successfully!
+
+检测时间戳/Checked at: 2026-07-03 12:18:19
+============================================================
+```
+
+When a plugin fails to import, the report also shows the failed plugin paths and a troubleshooting hint:
+
+![Failed plugin example](docs/screenshot-failed.png)
+
+```
+============================================================
+             🚀 ComfyUI Plugin Health Report
 ============================================================
 📦 Total Plugins: 306 (folders: 289, .py: 17)
 ✅ Successful: 305
@@ -54,10 +92,20 @@ Search the startup log above for Traceback, Cannot import, ModuleNotFoundError, 
 ============================================================
 ```
 
+## Screenshots
+
+### All plugins loaded (Health 100%)
+
+![All plugins loaded successfully](docs/screenshot-100.png)
+
+### Plugin import failed (Health < 100%)
+
+![Failed plugin example](docs/screenshot-failed.png)
+
 ## How It Works
 
 1. **Disguised as Node**: Registers a dummy node to avoid "IMPORT FAILED"
-2. **Log Capture**: Temporarily redirects stdout/stderr to detect "(IMPORT FAILED)" markers
+2. **Log Capture**: Temporarily redirects stdout/stderr and intercepts `logging.Handler.emit`
 3. **Delayed Output**: Waits briefly after import timing output so plugins can finish loading
 4. **Troubleshooting Hint**: Reminds you which log keywords to search when a plugin import fails
 5. **Color Report**: ANSI-colored summary in console
