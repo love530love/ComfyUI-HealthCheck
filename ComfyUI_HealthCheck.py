@@ -1,7 +1,7 @@
 # ComfyUI_HealthCheck.py
 # A lightweight health check plugin for ComfyUI
 # Author: love530love
-# Version: 1.0.7
+# Version: 1.0.9
 
 import os
 import sys
@@ -40,19 +40,29 @@ NODE_DISPLAY_NAME_MAPPINGS = {
 
 # ===== Log Capture System =====
 class LogCapture:
-    """Captures ComfyUI startup logs to detect IMPORT FAILED"""
+    """Captures ComfyUI startup logs to detect IMPORT FAILED.
+
+    双通道捕获：
+    1. logging.Handler.emit 拦截：捕获 logging.info/warning 等调用，
+       这是 v0.27.0+ ComfyUI 实际使用的输出方式（StreamHandler → sys.stderr）
+    2. stdout/stderr Tee：兜底，捕获 print() 和子进程输出
+
+    两路共享同一个 _process_line 状态机，保证新/旧版 ComfyUI 都能触发报告。
+    """
 
     def __init__(self):
-        self.original_stdout = sys.stdout
-        self.original_stderr = sys.stderr
-        self.original_handler_streams = {}
         self.captured = io.StringIO()
         self.import_failed_lines = []
         self.import_success_lines = []
         self.import_times_complete = False  # 标记是否完成导入统计
         self._lock = threading.Lock()
-        self.stdout_proxy = None
-        self.stderr_proxy = None
+        self._line_buffer = ""
+        # 记录我们安装/替换的对象，便于 stop() 时还原
+        self._installed_handlers = []   # [(handler, original_emit)]
+        self._stdout_proxy = None
+        self._stderr_proxy = None
+        self._orig_stdout = None
+        self._orig_stderr = None
 
     def _append_capture(self, data):
         self.captured.write(data)
@@ -82,6 +92,17 @@ class LogCapture:
             # ComfyUI-Manager 启动完成，几乎立即输出
             trigger_delayed_report(0.5)
 
+    def _feed(self, text):
+        """把任意字符串喂给状态机，按行切分触发 _process_line。"""
+        with self._lock:
+            self._append_capture(text)
+            self._line_buffer += text
+            if "\n" in self._line_buffer:
+                lines = self._line_buffer.split("\n")
+                self._line_buffer = lines[-1]
+                for line in lines[:-1]:
+                    self._process_line(line)
+
     @staticmethod
     def _write_original(stream, data):
         try:
@@ -91,67 +112,117 @@ class LogCapture:
             safe_data = data.encode(encoding, errors="replace").decode(encoding)
             stream.write(safe_data)
 
-    def start(self):
+    def _make_emit_proxy(self, handler):
+        """为 handler.emit 创建一个代理，先调用原 emit 写终端，
+        再把格式化后的消息喂给 _feed。"""
+        original_emit = handler.emit
         capture = self
 
+        def emit_proxy(record):
+            try:
+                original_emit(record)
+            except Exception:
+                # 原 emit 失败不影响我们自己的逻辑
+                pass
+            try:
+                msg = handler.format(record) if handler.formatter else record.getMessage()
+                capture._feed(msg + "\n")
+            except Exception:
+                pass
+
+        return emit_proxy, original_emit
+
+    def _patch_existing_handlers(self):
+        """给所有已存在的 logging handler 替换 emit。"""
+        root = logging.getLogger()
+        for handler in root.handlers:
+            proxy, original = self._make_emit_proxy(handler)
+            handler.emit = proxy
+            self._installed_handlers.append((handler, original))
+
+    def _install_handler_watcher(self):
+        """启动一个后台线程，周期性扫描新加入的 logging handler，
+        把它们的 emit 也包一层。ComfyUI 可能在加载过程中动态添加 handler。"""
+        capture = self
+        stop_event = threading.Event()
+
+        def watcher():
+            seen = set(id(h) for h in logging.getLogger().handlers)
+            while not stop_event.wait(0.5):
+                current = list(logging.getLogger().handlers)
+                for h in current:
+                    if id(h) in seen:
+                        continue
+                    seen.add(id(h))
+                    if h in [hh for hh, _ in capture._installed_handlers]:
+                        continue
+                    proxy, original = capture._make_emit_proxy(h)
+                    h.emit = proxy
+                    capture._installed_handlers.append((h, original))
+
+        thread = threading.Thread(target=watcher, daemon=True)
+        thread.start()
+        return stop_event, thread
+
+    def start(self):
+        # 1. 拦截 logging.Handler.emit（v0.27.0+ 核心通道）
+        self._patch_existing_handlers()
+        self._watcher_stop, self._watcher_thread = self._install_handler_watcher()
+
+        # 2. 兜底：拦截 stdout/stderr（兼容旧版、子进程输出、print()）
+        capture = self
+        self._orig_stdout = sys.stdout
+        self._orig_stderr = sys.stderr
+
         class TeeIO:
-            def __init__(self, stream_type):
+            def __init__(self, orig, stream_type):
+                self._orig = orig
                 self.stream_type = stream_type
-                self.buffer = ""
 
             def write(self, data):
-                # Write to original stream
-                if self.stream_type == 'stdout':
-                    capture._write_original(capture.original_stdout, data)
-                else:
-                    capture._write_original(capture.original_stderr, data)
-
-                # Real-time detection
-                with capture._lock:
-                    # Write to capture buffer
-                    capture._append_capture(data)
-                    self.buffer += data
-                    if "\n" in self.buffer:
-                        lines = self.buffer.split("\n")
-                        self.buffer = lines[-1]
-                        for line in lines[:-1]:
-                            capture._process_line(line)
+                try:
+                    capture._write_original(self._orig, data)
+                except Exception:
+                    pass
+                try:
+                    capture._feed(data)
+                except Exception:
+                    pass
 
             def flush(self):
-                if self.stream_type == 'stdout':
-                    capture.original_stdout.flush()
-                else:
-                    capture.original_stderr.flush()
+                try:
+                    self._orig.flush()
+                except Exception:
+                    pass
 
             def isatty(self):
                 return False
 
-        self.stdout_proxy = TeeIO('stdout')
-        self.stderr_proxy = TeeIO('stderr')
-        sys.stdout = self.stdout_proxy
-        sys.stderr = self.stderr_proxy
-
-        # ComfyUI configures logging before custom nodes are imported, so
-        # existing handlers keep pointing at the old streams unless updated.
-        for handler in logging.getLogger().handlers:
-            stream = getattr(handler, "stream", None)
-            if stream is capture.original_stdout:
-                capture.original_handler_streams[handler] = stream
-                handler.stream = sys.stdout
-            elif stream is capture.original_stderr:
-                capture.original_handler_streams[handler] = stream
-                handler.stream = sys.stderr
+        self._stdout_proxy = TeeIO(self._orig_stdout, "stdout")
+        self._stderr_proxy = TeeIO(self._orig_stderr, "stderr")
+        sys.stdout = self._stdout_proxy
+        sys.stderr = self._stderr_proxy
 
     def stop(self):
-        for handler, stream in self.original_handler_streams.items():
-            handler.stream = stream
-        self.original_handler_streams.clear()
-        if sys.stdout is self.stdout_proxy:
-            sys.stdout = self.original_stdout
-        if sys.stderr is self.stderr_proxy:
-            sys.stderr = self.original_stderr
-        self.stdout_proxy = None
-        self.stderr_proxy = None
+        # 1. 还原 logging handler.emit
+        for handler, original_emit in self._installed_handlers:
+            try:
+                handler.emit = original_emit
+            except Exception:
+                pass
+        self._installed_handlers.clear()
+
+        # 2. 停止 handler watcher
+        if getattr(self, "_watcher_stop", None) is not None:
+            self._watcher_stop.set()
+
+        # 3. 还原 stdout/stderr
+        if sys.stdout is self._stdout_proxy:
+            sys.stdout = self._orig_stdout
+        if sys.stderr is self._stderr_proxy:
+            sys.stderr = self._orig_stderr
+        self._stdout_proxy = None
+        self._stderr_proxy = None
         return self.captured.getvalue()
 
 
@@ -242,7 +313,7 @@ BANNER = r"""
 ██║  ██║  ███████╗  ██║  ██║  ███████╗  ██║     ██║  ██║  ╚██████╗  ██║  ██║  ███████╗  ╚██████╗  ██║  ██╗
 ╚═╝  ╚═╝  ╚══════╝  ╚═╝  ╚═╝  ╚══════╝  ╚═╝     ╚═╝  ╚═╝   ╚═════╝  ╚═╝  ╚═╝  ╚══════╝   ╚═════╝  ╚═╝  ╚═╝
 
-   🔍 ComfyUI HealthCheck v1.0.8
+   🔍 ComfyUI HealthCheck v1.0.9
 """
 
 _report_printed = False  # 防止重复输出
