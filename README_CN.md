@@ -1,5 +1,7 @@
 ﻿# 🔍 ComfyUI 健康检查器
 
+![ComfyUI HealthCheck](docs/banner.png)
+
 轻量级 ComfyUI 插件健康监控工具，实时检测插件导入状态并输出彩色摘要报告。
 
 ## 特性

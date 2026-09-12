@@ -1,5 +1,7 @@
 ﻿# 🔍 ComfyUI HealthCheck
 
+![ComfyUI HealthCheck](docs/banner.png)
+
 A lightweight health check plugin for ComfyUI that monitors custom node import status and provides colorful summary reports.
 
 ## Features
@@ -52,7 +54,7 @@ No configuration needed. After ComfyUI starts, check the console output:
 ██║  ██║  ███████╗  ██║  ██║  ███████╗  ██║     ██║  ██║  ╚██████╗  ██║  ██║  ███████╗  ╚██████╗  ██║  ██╗
 ╚═╝  ╚═╝  ╚══════╝  ╚═╝  ╚═╝  ╚══════╝  ╚═╝     ╚═╝  ╚═╝   ╚═════╝  ╚═╝  ╚═╝  ╚══════╝   ╚═════╝  ╚═╝  ╚═╝
 
-   🔍 ComfyUI HealthCheck v1.0.9
+   🔍 ComfyUI HealthCheck v1.1.1
 
 ============================================================
              🚀 ComfyUI Plugin Health Report
