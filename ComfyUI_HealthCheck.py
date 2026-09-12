@@ -1,14 +1,15 @@
 # ComfyUI_HealthCheck.py
 # A lightweight health check plugin for ComfyUI
 # Author: love530love
-# Version: 1.0.9
+# Version: 1.1.1
 
 import os
 import sys
+import time
+import socket
 import threading
 import io
 import logging
-import re
 from pathlib import Path
 from datetime import datetime
 
@@ -38,16 +39,54 @@ NODE_DISPLAY_NAME_MAPPINGS = {
 }
 
 
+# ===== Startup completion state (shared across capture channels) =====
+_server_up = False       # HTTP server listening (all node imports finished)
+_manager_done = False    # ComfyUI-Manager "All startup tasks have been completed." seen
+_manager_expected = False  # Manager is active => expect its completion marker
+_last_activity = time.monotonic()  # last time any log byte was observed
+
+
+def _set_server_up():
+    global _server_up
+    _server_up = True
+
+
+def _set_manager_done():
+    global _manager_done
+    _manager_done = True
+
+
+def _set_manager_expected():
+    global _manager_expected
+    _manager_expected = True
+
+
+def _touch_activity():
+    global _last_activity
+    _last_activity = time.monotonic()
+
+
+def _detect_manager_expected():
+    """Manager 驱动着插件加载循环，在 HealthCheck 被导入时其包已在 sys.modules；
+    也兼容 --enable-manager 启动参数。"""
+    if "--enable-manager" in sys.argv:
+        return True
+    return any(name == "comfyui_manager" or name.startswith("comfyui_manager.")
+               for name in sys.modules)
+
+
 # ===== Log Capture System =====
 class LogCapture:
     """Captures ComfyUI startup logs to detect IMPORT FAILED.
 
-    双通道捕获：
-    1. logging.Handler.emit 拦截：捕获 logging.info/warning 等调用，
-       这是 v0.27.0+ ComfyUI 实际使用的输出方式（StreamHandler → sys.stderr）
-    2. stdout/stderr Tee：兜底，捕获 print() 和子进程输出
+    三通道捕获：
+    1. logging.Handler.emit 拦截：捕获 logging.info/warning 等调用
+    2. stdout/stderr Tee：捕获 print() 和子进程输出
+    3. 日志文件 tail（_completion_watcher）：直接读 ComfyUI-Manager 写的
+       user/comfyui.log，即使前两条进程内管线被第三方插件破坏也能拿到
+       启动完成标记和 IMPORT FAILED 信息
 
-    两路共享同一个 _process_line 状态机，保证新/旧版 ComfyUI 都能触发报告。
+    三路共享同一个 _process_line 状态机。
     """
 
     def __init__(self):
@@ -71,6 +110,7 @@ class LogCapture:
             self.captured.seek(0)
             self.captured.truncate(0)
             self.captured.write(value)
+        _touch_activity()
 
     def _process_line(self, line):
         if "(IMPORT FAILED)" in line or "IMPORT FAILED:" in line:
@@ -79,18 +119,14 @@ class LogCapture:
             self.import_success_lines.append(line)
         elif "Import times for custom nodes:" in line:
             self.import_times_complete = True
-            # 旧版兼容：触发延迟报告（延迟更长以覆盖新版额外输出）
-            trigger_delayed_report(10.0)
         elif "To see the GUI go to:" in line:
-            # 新版 ComfyUI：服务器启动完成，触发延迟报告
-            # 延迟 15 秒确保覆盖后续异步插件初始化（DEPRECATION WARNING、
-            # web 资源加载、ComfyUI-Manager 缓存更新等）
-            # trigger_delayed_report 会自动取消之前的 timer，
-            # 所以即使 Import times 先触发，最终也会以这个更晚的触发为准
-            trigger_delayed_report(15.0)
+            # 服务器开始监听 = 所有插件已导入完毕
+            _set_server_up()
         elif "[ComfyUI-Manager] All startup tasks have been completed." in line:
-            # ComfyUI-Manager 启动完成，几乎立即输出
-            trigger_delayed_report(0.5)
+            # ComfyUI-Manager 启动任务全部完成（包括注册表缓存刷新）
+            _set_manager_done()
+        elif "[START] ComfyUI-Manager" in line:
+            _set_manager_expected()
 
     def _feed(self, text):
         """把任意字符串喂给状态机，按行切分触发 _process_line。"""
@@ -287,14 +323,23 @@ def extract_failed_plugins(log_lines):
     return failed
 
 
-def extract_plugin_name_from_path(path_text):
-    """Extract the plugin folder/file name after custom_nodes from a path."""
-    cleaned = path_text.strip().strip("'\"")
-    parts = cleaned.replace("\\", "/").split("/")
-    for index, part in enumerate(parts):
-        if part == "custom_nodes" and index + 1 < len(parts):
-            return parts[index + 1].strip()
-    return None
+def _collect_failed_from_log():
+    """Authoritative full-file scan for IMPORT FAILED lines.
+
+    The incremental capture channels (logging emit proxy, stdout tee, log-tail)
+    only observe lines written *after* HealthCheck is imported, so failures of
+    plugins loaded earlier would be missed. Scanning the whole ComfyUI log file
+    at report time guarantees the failed-plugin list is complete.
+    """
+    try:
+        path = _get_log_file_path(_get_comfyui_port())
+        if not path or not os.path.exists(path):
+            return []
+        with open(path, "r", encoding="utf-8", errors="ignore") as f:
+            content = f.read()
+        return [ln for ln in content.splitlines() if "IMPORT FAILED" in ln.upper()]
+    except Exception:
+        return []
 
 
 # ===== Report Output =====
@@ -303,21 +348,21 @@ BANNER = r"""
 ██╔════╝  ██╔═══██╗  ████╗ ████║  ██╔════╝  ╚██╗ ██╔╝  ██║  ██║  ██║
 ██║       ██║   ██║  ██╔████╔██║  █████╗     ╚████╔╝   ██║  ██║  ██║
 ██║       ██║   ██║  ██║╚██╔╝██║  ██╔══╝      ╚██╔╝    ██║  ██║  ██║
-╚██████╗  ╚██████╔╝  ██║ ╚═╝ ██║  ██║          ██║     ╚████╔╝   ██║ 
- ╚═════╝   ╚═════╝   ╚═╝     ╚═╝  ╚═╝          ╚═╝      ╚═══╝    ╚═╝   
+╚██████╗  ╚██████╔╝  ██║ ╚═╝ ██║  ██║          ██║     ╚████╔╝   ██║
+ ╚═════╝   ╚═════╝   ╚═╝     ╚═╝  ╚═╝          ╚═╝      ╚═══╝    ╚═╝
 
 ██╗  ██╗  ███████╗   █████╗   ██╗    ████████╗  ██╗  ██╗   ██████╗  ██╗  ██╗  ███████╗   ██████╗  ██╗  ██╗
 ██║  ██║  ██╔════╝  ██╔══██╗  ██║    ╚══██╔══╝  ██║  ██║  ██╔════╝  ██║  ██║  ██╔════╝  ██╔════╝  ██║ ██╔╝
-███████║  █████╗    ███████║  ██║       ██║     ███████║  ██║       ███████║  █████╗    ██║       █████╔╝ 
-██╔══██║  ██╔══╝    ██╔══██║  ██║       ██║     ██╔══██║  ██║       ██╔══██║  ██╔══╝    ██║       ██╔═██╗ 
+███████║  █████╗    ███████║  ██║       ██║     ███████║  ██║       ███████║  █████╗    ██║       █████╔╝
+██╔══██║  ██╔══╝    ██╔══██║  ██║       ██║     ██╔══██║  ██║       ██╔══██║  ██╔══╝    ██║       ██╔═██╗
 ██║  ██║  ███████╗  ██║  ██║  ███████╗  ██║     ██║  ██║  ╚██████╗  ██║  ██║  ███████╗  ╚██████╗  ██║  ██╗
 ╚═╝  ╚═╝  ╚══════╝  ╚═╝  ╚═╝  ╚══════╝  ╚═╝     ╚═╝  ╚═╝   ╚═════╝  ╚═╝  ╚═╝  ╚══════╝   ╚═════╝  ╚═╝  ╚═╝
 
-   🔍 ComfyUI HealthCheck v1.0.9
+   🔍 ComfyUI HealthCheck v1.1.1
 """
 
 _report_printed = False  # 防止重复输出
-_report_timer = None     # 当前待执行的报告 timer
+_watcher_stop = threading.Event()
 
 
 def print_report():
@@ -332,6 +377,11 @@ def print_report():
         total, folders, pyfiles = count_plugins()
         node_count = get_node_count()
 
+        # Merge an authoritative full-file scan so early-loaded plugins (whose
+        # failures predate HealthCheck's capture window) are not missed.
+        for line in _collect_failed_from_log():
+            if line not in log_capture.import_failed_lines:
+                log_capture.import_failed_lines.append(line)
         failed_plugins = extract_failed_plugins(log_capture.import_failed_lines)
 
         failed_count = len(failed_plugins)
@@ -384,37 +434,145 @@ def print_report():
         import traceback
         traceback.print_exc()
     finally:
+        _watcher_stop.set()
         log_capture.stop()
 
 
-def start_daemon_timer(delay, callback):
-    timer = threading.Timer(delay, callback)
-    timer.daemon = True
-    timer.start()
-    return timer
+# ===== Startup completion watcher (v1.1.1) =====
+# 设计目标：插件加载一结束就尽快、正确地打印报告，且绝不能让用户感到"久久没打印"。
+# 不靠盲等固定秒数，而是用"多保险信号 + 输出沉降检测"。
+#
+# 判定"插件加载已结束"的三重独立信号（三保险 / defense in depth）：
+#   A) HTTP 端口探测：服务器开始监听 => 所有插件已导入（完全不依赖日志，最稳）
+#   B) 日志出现 "Import times for custom nodes:" 这一行
+#   C) 日志出现 "[ComfyUI-Manager] All startup tasks have been completed."
+# 只要 A 或 B 为真，即可确定每个自定义节点都已导入完毕，所有 IMPORT FAILED
+# 行都已落盘。此时进入"沉降观察"：当启动输出已安静 SETTLE_SECONDS（无新日志字节，
+# 说明缓冲区已冲刷、不会有更晚的导入错误还在到达）即打印；但无论输出是否持续流动，
+# 最多只等 MAX_GRACE_SECONDS。这样既不等盲等的 300s 静默期，也不会在日志持续输出时无限拖。
+#   - C 是冗余的"迟到的兜底"：若前面都没触发，它一出现就立即打印。
+#   - HARD_CAP_SECONDS 是"启动卡死"探测器（自进程启动起算，不是逐轮盲等）：
+#     真·启动卡死时至少也能打印一份诊断。
+# 打印位置：紧跟插件列表 / 服务器启动之后，而非被 Manager 静默刷新注册表拖到很后面。
+HARD_CAP_SECONDS = 600            # 绝对兜底：启动疑似卡死，强制打印
+SETTLE_SECONDS = 3               # 导入结束后输出安静这么久 => 冲刷完毕，可打印
+MAX_GRACE_SECONDS = 20           # 但导入结束后最多只等这么久（输出持续流动时）
+POLL_INTERVAL = 5.0
+
+_log_tail = {"path": None, "pos": 0}
 
 
-def trigger_delayed_report(delay=5.0):
-    """在检测到导入完成后触发报告，支持自定义延迟
-    
-    每次调用会取消之前的 timer，确保只有最后一个触发点生效。
-    例如：Import times (10s) → To see the GUI (15s)，最终只会执行 15s 的那个。
-    """
-    global _report_timer
-    if _report_timer is not None:
-        _report_timer.cancel()
-    _report_timer = start_daemon_timer(delay, print_report)
+def _get_comfyui_port():
+    try:
+        from comfy.cli_args import args
+        return args.port
+    except Exception:
+        pass
+    try:
+        if "--port" in sys.argv:
+            return int(sys.argv[sys.argv.index("--port") + 1])
+    except Exception:
+        pass
+    return 8188
+
+
+def _get_log_file_path(port):
+    """ComfyUI-Manager 的日志文件：默认 user/comfyui.log，指定 --port 时为
+    user/comfyui_{port}.log（见 Manager prestartup_script.py 的命名规则）。"""
+    try:
+        import folder_paths
+        user_dir = folder_paths.get_user_directory()
+    except Exception:
+        return None
+    base = os.path.join(user_dir, "comfyui")
+    if port != 8188 and os.path.exists(f"{base}_{port}.log"):
+        return f"{base}_{port}.log"
+    return f"{base}.log"
+
+
+def _probe_port(port):
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=0.5):
+            return True
+    except OSError:
+        return False
+
+
+def _tail_log_file():
+    """增量读取 Manager 写的日志文件，喂给状态机。
+    这条通道不经过进程内 logging 管线，即使 handler.emit 链被
+    第三方插件破坏也能拿到启动完成标记和 IMPORT FAILED 信息。"""
+    path = _log_tail["path"]
+    if not path:
+        return
+    try:
+        size = os.path.getsize(path)
+        pos = _log_tail["pos"]
+        if size < pos:
+            pos = 0  # 日志被轮转/截断，从头读
+        if size == pos:
+            return
+        with open(path, "r", encoding="utf-8", errors="ignore") as f:
+            f.seek(pos)
+            data = f.read()
+        _log_tail["pos"] = size
+        if data:
+            log_capture._feed(data)
+    except Exception:
+        pass
+
+
+def _completion_watcher():
+    global _manager_expected
+    port = _get_comfyui_port()
+    path = _get_log_file_path(port)
+    _log_tail["path"] = path
+    try:
+        _log_tail["pos"] = os.path.getsize(path) if path and os.path.exists(path) else 0
+    except Exception:
+        _log_tail["pos"] = 0
+
+    if _detect_manager_expected():
+        _set_manager_expected()
+
+    start = time.monotonic()
+    trigger_time = None
+    while not _watcher_stop.wait(POLL_INTERVAL):
+        if _report_printed:
+            return
+        _tail_log_file()
+        if not _server_up and _probe_port(port):
+            _set_server_up()
+        now = time.monotonic()
+
+        # 1) Startup-stall detector (absolute last resort: time since process start).
+        if now - start > HARD_CAP_SECONDS:
+            print_report()
+            return
+
+        # 2) Redundant late safety: Manager finished every startup task.
+        if _manager_done:
+            print_report()
+            return
+
+        # 3) Plugin loading finished? (三保险: port probe OR import-times line)
+        #    Either signal means every custom node has been imported, so all
+        #    IMPORT FAILED lines are already in the log.
+        if _server_up or log_capture.import_times_complete:
+            if trigger_time is None:
+                trigger_time = now
+            # Print once the startup output has settled — no new log bytes for
+            # SETTLE_SECONDS proves buffers are flushed and no late import error
+            # is still arriving...
+            settled = (now - _last_activity) >= SETTLE_SECONDS
+            # ...but never wait longer than MAX_GRACE_SECONDS after imports done,
+            # even if output keeps flowing.
+            grace_expired = (now - trigger_time) >= MAX_GRACE_SECONDS
+            if settled or grace_expired:
+                print_report()
+                return
 
 
 # ===== Initialization =====
 log_capture.start()
-
-
-# 备用：如果 60 秒内没有检测到导入完成标记，强制输出
-def backup_timer():
-    if not _report_printed:
-        print("[HealthCheck] Backup timer triggered...")
-        print_report()
-
-
-start_daemon_timer(60.0, backup_timer)
+threading.Thread(target=_completion_watcher, daemon=True).start()

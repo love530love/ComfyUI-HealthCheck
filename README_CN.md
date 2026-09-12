@@ -58,7 +58,7 @@ git clone https://github.com/love530love/ComfyUI-HealthCheck.git
 ██║  ██║  ███████╗  ██║  ██║  ███████╗  ██║     ██║  ██║  ╚██████╗  ██║  ██║  ███████╗  ╚██████╗  ██║  ██╗
 ╚═╝  ╚═╝  ╚══════╝  ╚═╝  ╚═╝  ╚══════╝  ╚═╝     ╚═╝  ╚═╝   ╚═════╝  ╚═╝  ╚═╝  ╚══════╝   ╚═════╝  ╚═╝  ╚═╝
 
-   🔍 ComfyUI HealthCheck v1.0.9
+   🔍 ComfyUI HealthCheck v1.1.1
 
 ============================================================
              🚀 ComfyUI Plugin Health Report
